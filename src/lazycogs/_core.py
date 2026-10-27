@@ -20,6 +20,7 @@ from lazycogs._backend import MultiBandStacBackendArray
 from lazycogs._cql2 import _extract_filter_fields, _sortby_fields
 from lazycogs._executor import run_on_loop
 from lazycogs._grid import compute_output_grid
+from lazycogs._item_cache import ItemCache
 from lazycogs._mosaic_methods import FirstMethod, MosaicMethodBase
 from lazycogs._store import resolve
 from lazycogs._temporal import _TemporalGrouper, _TimeStep, grouper_from_period
@@ -370,7 +371,7 @@ def _spatial_coords_with_eager_variables(index: RasterIndex) -> Coordinates:
 def _build_dataarray(
     *,
     parquet_path: str,
-    duckdb_client: DuckdbClient,
+    duckdb_client: DuckdbClient | ItemCache,
     resolved_bands: list[str],
     time_steps: list[_TimeStep],
     bbox: tuple[float, float, float, float],
@@ -757,9 +758,31 @@ def open(  # noqa: A001
         len(time_steps),
     )
 
+    # One query for every chunk's items, so chunk reads don't each query DuckDB.
+    t0 = time.perf_counter()
+    filter_fields = _extract_filter_fields(filter) if filter else set()
+    items = duckdb_client.search(
+        href,
+        bbox=bbox_4326,
+        datetime=datetime,
+        sortby=sortby,
+        filter=filter,
+        ids=ids,
+        include=list(
+            {"id", "geometry", "datetime", "start_datetime", "end_datetime", "assets"}
+            | filter_fields
+            | _sortby_fields(sortby),
+        ),
+    )
+    logger.debug(
+        "item query took %.3fs, found %d items",
+        time.perf_counter() - t0,
+        len(items),
+    )
+
     return _build_dataarray(
         parquet_path=href,
-        duckdb_client=duckdb_client,
+        duckdb_client=ItemCache(items),
         resolved_bands=resolved_bands,
         time_steps=time_steps,
         bbox=bbox,

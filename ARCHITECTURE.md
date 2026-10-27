@@ -23,7 +23,7 @@ src/lazycogs/
 
 `open()` accepts a local geoparquet file or, when a custom `DuckdbClient` is supplied, a parquet directory such as a hive-partitioned archive. It does not query a remote STAC API directly. The intended workflow is to run `rustac.search_to("items.parquet", api_url, ...)` once, then pass that parquet source to lazycogs. This keeps dask chunk execution from turning into hundreds of concurrent STAC API calls.
 
-When `duckdb_client=None`, `open()` creates a plain `DuckdbClient()` and requires a `.parquet` or `.geoparquet` path. A caller-supplied client is used for every startup and per-chunk query, including clients configured for hive partition pruning.
+When `duckdb_client=None`, `open()` creates a plain `DuckdbClient()` and requires a `.parquet` or `.geoparquet` path. A caller-supplied client is used for every startup query, including clients configured for hive partition pruning.
 
 ## Two-phase execution model
 
@@ -36,11 +36,12 @@ When `duckdb_client=None`, `open()` creates a plain `DuckdbClient()` and require
 3. Transform the requested bbox into EPSG:4326 for STAC spatial filtering.
 4. Query one representative item and open one COG per selected band to infer the output dtype/nodata contract.
 5. Query Arrow-backed datetime columns and build sorted `_TimeStep` objects. Each time step carries the exact `rustac` `datetime=` predicate used later during reads.
-6. Compute the output grid.
-7. Build one `MultiBandStacBackendArray` with shape `(band, time, y, x)` and wrap it in an xarray `LazilyIndexedArray`, or chunk it only when `chunks` is explicitly provided.
-8. Attach spatial coordinates and metadata. `spatial:transform` uses affine coefficient order; `spatial_ref.attrs["GeoTransform"]` uses GDAL geotransform order.
+6. Query every matching item once, with its footprint, times and assets, into an in-memory `ItemCache`.
+7. Compute the output grid.
+8. Build one `MultiBandStacBackendArray` with shape `(band, time, y, x)` and wrap it in an xarray `LazilyIndexedArray`, or chunk it only when `chunks` is explicitly provided.
+9. Attach spatial coordinates and metadata. `spatial:transform` uses affine coefficient order; `spatial_ref.attrs["GeoTransform"]` uses GDAL geotransform order.
 
-No pixel windows are read at open time. Runtime state such as the DuckDB client and store is kept on the backend array, not in `DataArray.attrs`, so xarray copies do not try to pickle live resources.
+No pixel windows are read at open time. Runtime state such as the item cache and store is kept on the backend array, not in `DataArray.attrs`, so xarray copies do not try to pickle live resources. The backend array holds no DuckDB client, so it can be pickled, e.g. to `dask.distributed` workers.
 
 ### Phase 1: compute time
 
@@ -49,7 +50,7 @@ When xarray asks the backend array for data, `MultiBandStacBackendArray.__getite
 1. Resolve band and time indices, including dimension squeezes for scalar keys.
 2. Convert scalar y/x selections into size-1 slices and compute the chunk affine transform.
 3. Compute the chunk bbox in EPSG:4326.
-4. Run one DuckDB spatial query per selected time step.
+4. Look up each selected time step's items for the chunk in the `ItemCache`, which matches footprints and times as DuckDB does.
 5. For each non-empty time step, call `read_chunk_async()` to read all selected bands from the matching COGs and feed them to the mosaic method.
 6. Return data in top-down raster order.
 
@@ -77,7 +78,7 @@ Read failures are controlled by `errors=`. `errors="raise"` wraps non-contract f
 
 ## Explain plans
 
-`da.lazycogs.explain()` discovers the underlying `MultiBandStacBackendArray` from a still-lazy DataArray and runs the same DuckDB spatial queries needed for the current view. It issues one query per `(time step, spatial tile)` combination and fans those results across active bands in Python. It stops before pixel I/O.
+`da.lazycogs.explain()` discovers the underlying `MultiBandStacBackendArray` from a still-lazy DataArray and runs the same item lookups needed for the current view. It does one lookup per `(time step, spatial tile)` combination and fans those results across active bands in Python. It stops before pixel I/O.
 
 With `fetch_headers=True`, explain also opens COG headers and populates `CogRead.overview_level`, window offsets, and window sizes. That path uses `_chunk_reader._open_and_window()` with a lightweight `_WindowContext`, shared with real reads, without constructing the full pixel-read context.
 
@@ -93,7 +94,7 @@ Threads are used for reprojection because `pyproj.Transformer.transform()` and n
 
 ## Chunking strategy
 
-The async read layer already fans out COG I/O within one chunk. Spatial dask chunks add more DuckDB queries, more COG opens, and more smaller gathers. Use spatial chunks only when the full array cannot fit in memory, and make them as large as memory allows.
+The async read layer already fans out COG I/O within one chunk. Spatial dask chunks add more COG opens and more smaller gathers. Use spatial chunks only when the full array cannot fit in memory, and make them as large as memory allows.
 
 Recommended defaults:
 

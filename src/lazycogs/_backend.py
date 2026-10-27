@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from async_geotiff import Store
     from rustac import DuckdbClient
 
+    from lazycogs._item_cache import ItemCache
     from lazycogs._mosaic_methods import MosaicMethodBase
     from lazycogs._temporal import _TimeStep
 
@@ -74,7 +75,7 @@ class _ChunkReadPlan:
 
     """
 
-    duckdb_client: DuckdbClient
+    duckdb_client: DuckdbClient | ItemCache
     parquet_path: str
     sortby: str | list[str | dict[str, str]] | None
     filter_expr: str | dict[str, Any] | None
@@ -327,7 +328,7 @@ class MultiBandStacBackendArray(BackendArray):
     """
 
     parquet_path: str
-    duckdb_client: DuckdbClient
+    duckdb_client: DuckdbClient | ItemCache
     bands: list[str]
     time_steps: list[_TimeStep]
     dst_affine: Affine

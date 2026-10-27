@@ -29,12 +29,13 @@ The `if not PARQUET.exists()` guard means re-running the notebook or script skip
 
 ## How queries shape the output
 
-When you call `lazycogs.open()`, it runs two DuckDB queries against the parquet file before returning:
+When you call `lazycogs.open()`, it runs three DuckDB queries against the parquet file before returning:
 
 1. Band discovery: finds the asset keys present in the first matching item (skipped if you pass `bands=`).
 2. Time-step discovery: scans all matching items to find the unique time steps (grouped by `time_period`).
+3. Item discovery: fetches every matching item's footprint, times and assets.
 
-Every subsequent pixel read re-runs a narrower version of the same query — filtered to a single time step — so the same parameters that shape the array also govern which scenes are read at access time.
+Every subsequent pixel read picks its time step's items for its chunk from those, so the same parameters that shape the array also govern which scenes are read at access time.
 
 ## Spatial filter
 
